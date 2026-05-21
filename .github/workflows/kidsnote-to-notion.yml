@@ -37,6 +37,49 @@ on:
         default: "false"
         type: choice
         options: ["false", "true"]
+      # ---- Multi-child accounts ----
+      # If your kidsnote account has more than one child, the script needs
+      # to know which one to mirror. The sessionid cookie itself isn't
+      # child-scoped (it doesn't matter which child you "select" in the
+      # kidsnote web UI before extracting the cookie), so the script
+      # defaults to the first child the API returns. Set this to the
+      # other child's NAME (case-insensitive substring) to override.
+      # Leave empty for single-child accounts.
+      child_name:
+        description: "Pick a specific child by name substring (e.g. '유주'). Leave empty for single-child accounts or to use the first child."
+        required: false
+        default: ""
+      # ---- AI letter / LLM dashboard toggles ----
+      # The four LLM-driven Notion pages (📖 성장 스토리, 🌟 마일스톤,
+      # 🌱 분기 관심사, 💌 선생님께 감사 카드) sometimes read awkwardly
+      # — most notably the vocative form for vowel-final names gets
+      # mis-conjugated. Graduate-backup operators can opt out of any
+      # subset; the statistical dashboards (📊 통계 / 📅 추억 / 🥗 영양)
+      # are unaffected.
+      disable_growth_story:
+        description: "Skip 📖 매월 성장 스토리"
+        required: false
+        default: "false"
+        type: choice
+        options: ["false", "true"]
+      disable_milestones:
+        description: "Skip 🌟 마일스톤"
+        required: false
+        default: "false"
+        type: choice
+        options: ["false", "true"]
+      disable_interests:
+        description: "Skip 🌱 분기 관심사"
+        required: false
+        default: "false"
+        type: choice
+        options: ["false", "true"]
+      disable_teacher_thanks:
+        description: "Skip 💌 선생님께 감사 카드"
+        required: false
+        default: "false"
+        type: choice
+        options: ["false", "true"]
   # Auto-resume: a 1-year backfill can take 18-30 hours of compute,
   # but a GitHub-hosted runner caps a single job at 6 hours. Without
   # cron, the user would have to manually re-trigger after every cap.
@@ -123,6 +166,17 @@ jobs:
           OLLAMA_HOST: "http://localhost:11434"
           OLLAMA_MODEL: "llama3.1:8b"
           PYTHONUNBUFFERED: "1"
+          # ---- Multi-child / LLM-skip env passthrough ----
+          # Workflow inputs aren't visible to the Python process unless we
+          # forward them. The four DISABLE_* names match _truthy() parsing
+          # in fetch.py. KIDSNOTE_CHILD_NAME doubles as a repo-secret-style
+          # default for accounts that always want the same non-first child;
+          # the workflow input takes precedence at runtime when set.
+          KIDSNOTE_CHILD_NAME: ${{ inputs.child_name }}
+          DISABLE_GROWTH_STORY: ${{ inputs.disable_growth_story }}
+          DISABLE_MILESTONES: ${{ inputs.disable_milestones }}
+          DISABLE_INTERESTS: ${{ inputs.disable_interests }}
+          DISABLE_TEACHER_THANKS: ${{ inputs.disable_teacher_thanks }}
         run: |
           set -eu
           ARGS=( "--auth-mode" "session-cookie-env" "--publish-to-notion" "--no-local-save" )

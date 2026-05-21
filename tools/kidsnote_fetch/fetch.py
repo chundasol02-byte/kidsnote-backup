@@ -487,6 +487,63 @@ def _resolve_secret(env: dict[str, str], key: str) -> str:
     return os.environ.get(key, "") or env.get(key, "")
 
 
+def _truthy(value: str) -> bool:
+    """Parse a workflow input / env var into a bool.
+
+    GitHub Actions ``workflow_dispatch`` choice inputs arrive as strings
+    (``"true"`` / ``"false"``), so a naive ``bool()`` of the raw string would
+    treat ``"false"`` as truthy. Accepts the common forms operators type.
+    """
+    return value.strip().lower() in ("true", "1", "yes", "on", "y")
+
+
+def _pick_child(
+    children: list[dict[str, Any]],
+    child_id: int | None,
+    child_name: str,
+    child_index: int | None,
+) -> dict[str, Any]:
+    """Resolve which child to mirror from the multi-child profile.
+
+    Priority: explicit id > name substring match > 1-based index > children[0].
+    Name match is case-insensitive Korean substring (e.g. ``유주`` matches
+    ``우유주``). Raises SystemExit with the available list if nothing matches —
+    that's nearly always more helpful than silently defaulting to children[0],
+    which was the original cause of the "I selected the second child in the
+    web UI but got the first child's data" bug report.
+    """
+    if not children:
+        sys.exit("no children found on this account.")
+    if child_id is not None:
+        match = next((c for c in children if c.get("id") == child_id), None)
+        if match is None:
+            avail = ", ".join(f"{c.get('id')}={c.get('name')}" for c in children)
+            sys.exit(f"--child-id {child_id} not in your profile. Available: {avail}")
+        return match
+    if child_name:
+        needle = child_name.strip().lower()
+        matches = [c for c in children if needle in (c.get("name") or "").lower()]
+        if len(matches) == 0:
+            avail = ", ".join(f"{c.get('id')}={c.get('name')}" for c in children)
+            sys.exit(
+                f"--child-name {child_name!r} matched no child. Available: {avail}"
+            )
+        if len(matches) > 1:
+            avail = ", ".join(f"{c.get('id')}={c.get('name')}" for c in matches)
+            sys.exit(
+                f"--child-name {child_name!r} ambiguous ({len(matches)} matches): "
+                f"{avail}. Use --child-id instead for an exact pick."
+            )
+        return matches[0]
+    if child_index is not None:
+        if child_index < 1 or child_index > len(children):
+            sys.exit(
+                f"--child-index {child_index} out of range (have {len(children)} child(ren))"
+            )
+        return children[child_index - 1]
+    return children[0]
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description="Personal Kidsnote fetcher - not part of the public package."
@@ -514,14 +571,44 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--browser", default="auto",
                     choices=["chrome", "firefox", "edge", "auto"],
                     help="(--auth-mode browser-cookie only)")
+    # ---- Child selection (priority: id > name > index > first) ----
+    # Multi-child accounts: previously the script silently defaulted to the
+    # first child the API returned, which surprised operators who had
+    # "switched active child" in the kidsnote web UI (a sessionid cookie is
+    # not child-scoped — switching in the web changes nothing for the API).
+    # Three knobs now cover the realistic cases.
     ap.add_argument("--child-id", type=int,
-                    help="Pick a specific child id; defaults to the first one.")
+                    help="Pick a specific child id (exact). "
+                         "See startup log for available ids on your account.")
+    ap.add_argument("--child-name", default="",
+                    help="Pick by case-insensitive substring of child's name "
+                         "(e.g. '유주' to match '우유주'). "
+                         "Errors out if multiple match — use --child-id instead.")
+    ap.add_argument("--child-index", type=int,
+                    help="Pick by 1-based position in the children list "
+                         "(only useful when names collide).")
     ap.add_argument("--no-menus", action="store_true",
                     help="Skip daily lunch menu sync.")
     ap.add_argument("--no-notices", action="store_true",
                     help="Skip center-wide notice sync.")
     ap.add_argument("--no-albums", action="store_true",
                     help="Skip photo album sync.")
+    # ---- LLM dashboard toggles -----
+    # Originally all 4 dashboards (📖 성장 스토리 / 🌟 마일스톤 / 🌱 분기 관심사
+    # / 💌 감사 카드) ran unconditionally when Ollama was reachable. For
+    # graduate-backup operators that's a poor fit: the LLM (a) sometimes mis-
+    # conjugates vocatives (e.g. "유주이야" for vowel-final names where the
+    # "이" suffix doesn't apply), and (b) costs ~1.5h of Ollama time per run.
+    # Each toggle skips one dashboard so operators can keep the parts they
+    # want and drop the parts that read awkwardly post-graduation.
+    ap.add_argument("--no-growth-story", action="store_true",
+                    help="Skip 📖 매월 성장 스토리 (LLM-written paragraph per month).")
+    ap.add_argument("--no-milestones", action="store_true",
+                    help="Skip 🌟 마일스톤 (LLM-extracted '처음 ...' moments).")
+    ap.add_argument("--no-interests", action="store_true",
+                    help="Skip 🌱 분기 관심사 (LLM-summarized themes per quarter).")
+    ap.add_argument("--no-teacher-thanks", action="store_true",
+                    help="Skip 💌 선생님께 감사 카드 (LLM-drafted thank-you letter).")
     ap.add_argument("--limit", type=int,
                     help="Only sync the N most recent reports (debugging).")
     ap.add_argument("--monthly-sample", action="store_true",
@@ -600,17 +687,24 @@ def main(argv: list[str] | None = None) -> int:
 
     # ---- enumerate child + reports -----
     children = _list_children(sess)
-    if not children:
-        sys.exit("no children found on this account.")
-    if args.child_id:
-        target = next((c for c in children if c.get("id") == args.child_id), None)
-        if target is None:
-            sys.exit(
-                f"child id {args.child_id} not in your profile. "
-                f"Available: {[(c.get('id'), c.get('name')) for c in children]}"
-            )
-    else:
-        target = children[0]
+    # ALWAYS print the full child roster so operators can self-diagnose
+    # multi-child accounts. Previously the only log line was "fetched N
+    # reports for child id=...", which silently swallowed the selection.
+    if children:
+        _LOGGER.info(
+            "Account has %d child(ren): %s",
+            len(children),
+            ", ".join(f"#{i + 1} id={c.get('id')} name={c.get('name')}"
+                      for i, c in enumerate(children)),
+        )
+    # Resolve which child to mirror. CLI flag wins over env var so a manual
+    # workflow run can override the repo-secret default without editing it.
+    child_name = args.child_name or _resolve_secret(env, "KIDSNOTE_CHILD_NAME")
+    target = _pick_child(children, args.child_id, child_name, args.child_index)
+    _LOGGER.info(
+        "Selected child: id=%s name=%s (override with --child-id / --child-name / KIDSNOTE_CHILD_NAME)",
+        target.get("id"), target.get("name"),
+    )
 
     reports = _list_reports(sess, int(target["id"]))
     if args.monthly_sample:
@@ -998,6 +1092,17 @@ def main(argv: list[str] | None = None) -> int:
     if should_run_llm_dashboards:
         cname = (reports[0].get("child_name") or "") if reports else ""
 
+        # Per-dashboard skip toggles. Either the CLI flag (manual local run)
+        # OR the matching DISABLE_* env var (workflow input → repo secret →
+        # script env) turns the corresponding page off. Each toggle is
+        # independent because graduate-backup operators reported the
+        # 💌 감사 카드 and 📖 성장 스토리 read awkwardly due to vocative
+        # errors, while 🌟 마일스톤 / 🌱 관심사 are statistical and read fine.
+        skip_growth = args.no_growth_story or _truthy(_resolve_secret(env, "DISABLE_GROWTH_STORY"))
+        skip_milestones = args.no_milestones or _truthy(_resolve_secret(env, "DISABLE_MILESTONES"))
+        skip_interests = args.no_interests or _truthy(_resolve_secret(env, "DISABLE_INTERESTS"))
+        skip_thanks = args.no_teacher_thanks or _truthy(_resolve_secret(env, "DISABLE_TEACHER_THANKS"))
+
         # Group by month + quarter
         from collections import defaultdict
         by_month: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -1022,7 +1127,9 @@ def main(argv: list[str] | None = None) -> int:
         MIN_BUDGET_FAST = 60   # 1 min for quick dashboards
         MIN_BUDGET_SLOW = 900  # 15 min — heuristic for big LLM ones
 
-        if _remaining_budget() < MIN_BUDGET_SLOW:
+        if skip_growth:
+            _LOGGER.info("📖 Growth story: skipped (--no-growth-story / DISABLE_GROWTH_STORY)")
+        elif _remaining_budget() < MIN_BUDGET_SLOW:
             _LOGGER.warning(
                 "📖 Growth story: skipped (low time budget %.0fs, "
                 "next cron run will retry)", _remaining_budget(),
@@ -1036,7 +1143,9 @@ def main(argv: list[str] | None = None) -> int:
             except Exception as e:
                 _LOGGER.warning("growth story publish failed: %s", e)
 
-        if _remaining_budget() < MIN_BUDGET_SLOW:
+        if skip_milestones:
+            _LOGGER.info("🌟 Milestones: skipped (--no-milestones / DISABLE_MILESTONES)")
+        elif _remaining_budget() < MIN_BUDGET_SLOW:
             _LOGGER.warning(
                 "🌟 Milestones: skipped (low time budget %.0fs)",
                 _remaining_budget(),
@@ -1050,7 +1159,9 @@ def main(argv: list[str] | None = None) -> int:
             except Exception as e:
                 _LOGGER.warning("milestones publish failed: %s", e)
 
-        if _remaining_budget() < MIN_BUDGET_FAST:
+        if skip_interests:
+            _LOGGER.info("🌱 Interests: skipped (--no-interests / DISABLE_INTERESTS)")
+        elif _remaining_budget() < MIN_BUDGET_FAST:
             _LOGGER.warning(
                 "🌱 Interests: skipped (low time budget %.0fs)",
                 _remaining_budget(),
@@ -1064,7 +1175,9 @@ def main(argv: list[str] | None = None) -> int:
             except Exception as e:
                 _LOGGER.warning("interests publish failed: %s", e)
 
-        if _remaining_budget() < MIN_BUDGET_FAST:
+        if skip_thanks:
+            _LOGGER.info("💌 Teacher thanks: skipped (--no-teacher-thanks / DISABLE_TEACHER_THANKS)")
+        elif _remaining_budget() < MIN_BUDGET_FAST:
             _LOGGER.warning(
                 "💌 Teacher thanks: skipped (low time budget %.0fs)",
                 _remaining_budget(),
