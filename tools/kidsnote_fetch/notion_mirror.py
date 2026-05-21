@@ -73,6 +73,17 @@ def _get_ollama() -> dict[str, str] | None:
     model = os.environ.get("OLLAMA_MODEL") or "qwen2.5:1.5b"
     if not host:
         return None
+    # Ollama itself uses OLLAMA_HOST for its server-bind address and accepts
+    # schema-less values like ``0.0.0.0:11434`` (= bind all interfaces). Many
+    # users have that exact value set system-wide because that's what the
+    # Ollama install docs suggest. But ``requests`` rejects schema-less URLs
+    # ("No connection adapters were found for '0.0.0.0:11434/api/version'"),
+    # so we auto-prepend http:// when missing. Also rewrite the wildcard
+    # 0.0.0.0 to 127.0.0.1 since 0.0.0.0 means "all interfaces" on the
+    # server side but is not a routable destination from the client side.
+    if "://" not in host:
+        host = "http://" + host
+    host = host.replace("://0.0.0.0", "://127.0.0.1")
     # Probe /api/version with a short timeout — fail fast.
     try:
         r = requests.get(f"{host.rstrip('/')}/api/version", timeout=5)
@@ -1231,6 +1242,20 @@ class NotionMirror:
             # Guard against junk responses
             if len(first) < 5 or len(first) > 200:
                 return None
+            # Chinese-leak filter — same as _ask_ollama uses. qwen2.5 / hermes3
+            # occasionally produce Korean-Chinese mixed output even when asked
+            # for Korean only. _summary_oneliner used to skip this filter
+            # (because it bypassed _ask_ollama for control over the prompt
+            # shape) — that's how we shipped the "运动好处讨论" sentence into a
+            # live page during the multi-child E2E test (2026-05-21).
+            original_len = len(first)
+            first, cjk_removed = _strip_cjk(first)
+            if cjk_removed and original_len > 0:
+                if cjk_removed / original_len > 0.20:
+                    return None  # essentially Chinese output, reject
+                first = " ".join(first.split())  # collapse gaps
+                if len(first) < 5:
+                    return None
             return first
         except Exception as e:
             logging.getLogger(__name__).debug("ollama summary skipped: %s", e)
