@@ -199,7 +199,7 @@ LLM이 가끔 헛소리를 만드는 걸 막기 위해 코드 안에 세 가지 
 
 > ⚠️ **100% 보장은 아닙니다.** LLM은 본질적으로 가끔 prompt를 안 따릅니다. 자녀 일기·부모 편지에서 어색한 부분 발견하면 노션에서 직접 수정하거나, AI 가공을 통째로 끄려면 [B. AI 가공을 안 쓰고 단순 백업 + 통계만 원할 때](#b-ai-가공을-안-쓰고-단순-백업--통계만-원할-때) 섹션 참고.
 
-> 🚦 **AI 통째로 끄고 단순 백업만 받고 싶다면**: `Run workflow` 화면에서 `disable_all_llm=true`로 설정하세요. 그러면 위 3개 토글이 페이지에 안 만들어지고, 알림장은 키즈노트 원본 그대로만 백업됩니다. 자세한 가이드는 [B. AI 가공을 안 쓰고 단순 백업 + 통계만 원할 때](#b-ai-가공을-안-쓰고-단순-백업--통계만-원할-때) 섹션 참고.
+> 🚦 **AI 통째로 끄고 단순 백업만 받고 싶다면**: `Run workflow` 화면에서 `use_ai_features`를 **`false`**로 설정하세요 (기본값은 `true` = AI 켜짐). 그러면 위 3개 토글이 페이지에 안 만들어지고, 알림장은 키즈노트 원본 그대로만 백업됩니다. 자세한 가이드는 [B. AI 가공을 안 쓰고 단순 백업 + 통계만 원할 때](#b-ai-가공을-안-쓰고-단순-백업--통계만-원할-때) 섹션 참고.
 
 1년치 알림장(보통 300~400개)이 노션 DB 한 곳에 자동 정렬됩니다.
 
@@ -221,7 +221,7 @@ LLM이 가끔 헛소리를 만드는 걸 막기 위해 코드 안에 세 가지 
 
 - 📊 통계 / 📅 작년 추억 — 알림장 1개 이상이면 항상 생성
 - 🥗 영양 분석 — **식단 정보가 있는 알림장이 1개 이상일 때만** (어학원 등 식단을 안 올리는 곳은 생성 안 됨)
-- 📖 / 🌟 / 🌱 / 💌 — Ollama LLM이 reachable + AI 토글 OFF 안 된 경우. `disable_all_llm=true`로 끄거나 Ollama 다운로드 실패 시 각각 skip되고 페이지 미생성
+- 📖 / 🌟 / 🌱 / 💌 — Ollama LLM이 reachable + AI 토글이 켜진 경우 (모두 default `true`). `use_ai_features=false`로 통째로 끄거나 각각 `use_growth_story=false` 등으로 끄거나 Ollama 다운로드 실패 시 각각 skip
 
 > 💡 모든 LLM 호출은 **GitHub Actions 러너 안의 무료 Ollama**(`llama3.1:8b`)로 처리되어 외부 API 비용·노출이 없습니다.
 
@@ -247,7 +247,7 @@ LLM이 가끔 헛소리를 만드는 걸 막기 위해 코드 안에 세 가지 
             │  - 4개 대시보드 (성장/마일스톤/관심사/감사) 생성
             │
             │  ⚠️ AI 가공 끄고 단순 백업 + 통계만 원하면
-            │     workflow input `disable_all_llm=true` 한 번 클릭
+            │     workflow input `use_ai_features=false` 한 번 클릭
             ▼
    내 노션 DB                       ← 나만 접근 가능
 ```
@@ -931,21 +931,23 @@ Selected child: id=1173370 name=나유주 (override with --child-id / --child-na
 
 ### 🚦 옵션 1 (가장 간단) — AI 전부 끄기 한 번에
 
-`Run workflow` 화면에서 **`disable_all_llm`** 옵션을 `true`로:
+`Run workflow` 화면에서 **`use_ai_features`** 를 `false`로:
 
 ```
 Run workflow ▾
-├─ limit:                  [비워둠]
-├─ child_name:             [비워둠 또는 자녀 이름]
-├─ disable_all_llm:        true   ← ✅ AI 가공 통째로 OFF
-├─ disable_growth_story:   (의미 없음)
-├─ disable_milestones:     (의미 없음)
-├─ disable_interests:      (의미 없음)
-├─ disable_teacher_thanks: (의미 없음)
+├─ limit:               [비워둠]
+├─ monthly_sample:      false   (기본값 — 전체 백업)
+├─ force_refresh:       false   (기본값)
+├─ child_name:          [비워둠 또는 자녀 이름]
+├─ use_ai_features:     false   ← 🚦 AI 통째로 OFF
+├─ use_growth_story:    true    (의미 없음 — 위가 false면 무시)
+├─ use_milestones:      true    (의미 없음)
+├─ use_interests:       true    (의미 없음)
+├─ use_teacher_thanks:  true    (의미 없음)
 └─ [Run workflow] 클릭
 ```
 
-이 옵션이 `true`면:
+이 옵션이 `false`면:
 - 알림장 본문·사진·첨부파일 · 댓글 · 공지 · 앨범 · 식단은 **그대로 백업**
 - 통계 대시보드 3개 (📊 / 📅 / 🥗)는 **그대로 생성**
 - **AI가 만드는 7가지(callout 3 + 대시보드 4)는 모두 생성 안 됨**
@@ -953,29 +955,29 @@ Run workflow ▾
 
 ### 🎛️ 옵션 2 (세밀하게) — 4개 대시보드만 골라서 끄기
 
-대시보드 중 일부만 끄고 알림장 callout은 유지하고 싶으면 각각의 토글 사용. `disable_all_llm`을 `false`로 두고:
+대시보드 중 일부만 끄고 알림장 callout은 유지하고 싶으면 각각의 토글 사용. `use_ai_features`는 `true`로 두고 (기본값):
 
-| Workflow input | 끄면 안 만들어지는 페이지 | 무엇이 빠지나 |
+| Workflow input | `false`로 두면 안 만들어지는 페이지 | 무엇이 빠지나 |
 |---|---|---|
-| `disable_growth_story` | 📖 매월 성장 스토리 | LLM이 매월 한 단락씩 쓰는 성장 일기 |
-| `disable_milestones` | 🌟 마일스톤 | LLM이 추출한 "처음 ..." 순간들 |
-| `disable_interests` | 🌱 분기 관심사 | LLM이 분기별로 정리한 자녀 관심사 TOP 5 |
-| `disable_teacher_thanks` | 💌 연도별 선생님께 | LLM이 쓰는 졸업·연말 감사 편지 초안 |
+| `use_growth_story` | 📖 매월 성장 스토리 | LLM이 매월 한 단락씩 쓰는 성장 일기 |
+| `use_milestones` | 🌟 마일스톤 | LLM이 추출한 "처음 ..." 순간들 |
+| `use_interests` | 🌱 분기 관심사 | LLM이 분기별로 정리한 자녀 관심사 TOP 5 |
+| `use_teacher_thanks` | 💌 연도별 선생님께 | LLM이 쓰는 졸업·연말 감사 편지 초안 |
 
 ### 💡 상황별 권장 조합
 
 | 상황 | 권장 |
 |---|---|
-| 재원 중, AI 다 켜고 풍부하게 | 모두 `false` (기본값) |
-| 졸업·휴원 후 백업 — 깔끔하게 보존만 | **`disable_all_llm=true`** (가장 간단) |
-| AI는 켜되 편지만 어색해서 빼고 싶음 | `disable_growth_story=true` + `disable_teacher_thanks=true` |
+| 재원 중, AI 다 켜고 풍부하게 | 모두 `true` (기본값) |
+| 졸업·휴원 후 백업 — 깔끔하게 보존만 | **`use_ai_features=false`** (가장 간단) |
+| AI는 켜되 편지만 어색해서 빼고 싶음 | `use_growth_story=false` + `use_teacher_thanks=false` |
 | 통계 페이지조차 싫음 | 현재는 통계 페이지(📊 / 📅 / 🥗)만 끄는 옵션 없음. 해당 페이지를 노션에서 수동 archive |
 
 ### 🔁 매번 같은 설정으로 돌리고 싶다면 (영구 설정)
 
 `Run workflow` 화면에서 매번 같은 옵션을 고르는 게 귀찮다면, fork repo의 `.github/workflows/kidsnote-to-notion.yml` 파일을 GitHub 웹 에디터에서 열어:
 
-1. 원하는 옵션의 `default: "false"`를 `default: "true"`로 수정
+1. 원하는 옵션의 `default: "true"`를 `default: "false"`로 수정 (또는 그 반대)
 2. 우측 상단 **`Commit changes ...`** 버튼 → 메시지는 그대로 두고 **`Commit changes`** 클릭
 
 이후로는 4시간 cron 자동 백업도 그 설정으로 돌아갑니다. 클로드·VSCode 같은 도구 필요 없이 **노션과 GitHub만으로 끝나는 셋업**입니다.
@@ -1219,7 +1221,7 @@ _ 💌 연도별 선생님께                 ┘
 받침 있는 이름(`하린`, `시연` 등)에는 처음부터 영향이 없었습니다.
 
 만약 그래도 AI 가공 결과가 마음에 안 든다면:
-1. **AI 통째로 끄기** — `Run workflow`에서 `disable_all_llm=true` (단순 백업 + 통계만)
+1. **AI 통째로 끄기** — `Run workflow`에서 `use_ai_features=false` (단순 백업 + 통계만)
 2. **일부만 끄기** — 4개 `disable_*` 옵션 중 원하는 것만
 
 자세한 가이드는 [👨‍👩‍👧‍👦 (고급) 자녀가 둘 이상이거나 AI 편지를 끄고 싶을 때](#-고급-자녀가-둘-이상이거나-ai-편지를-끄고-싶을-때) 섹션 참고.
@@ -1332,7 +1334,7 @@ UI는 노션이 가끔 바뀝니다. 메뉴 이름이 달라도 다음 기능을
 | 모바일/태블릿에서 단계 진행 안 됨 | 모바일은 미지원 | 데스크톱/노트북 사용 |
 | **다른 자녀가 백업됨** (둘째인데 첫째가 백업됨) | 자녀가 둘 이상이면 API상 첫 번째 자녀가 default. `child_name` workflow input 누락 | `Run workflow` 시 **`child_name`** 칸에 백업하려는 자녀 이름 일부 입력 (예: `유주`). 자세히는 [(고급) 자녀가 둘 이상이거나 AI 편지를 끄고 싶을 때](#-고급-자녀가-둘-이상이거나-ai-편지를-끄고-싶을-때) 섹션 |
 | **🥗 영양 분석 페이지 안 보임** | 어린이집/학원이 식단 정보를 안 올렸음 | 정상 동작 — 식단 데이터 0개면 영양 분석 페이지는 미생성 (어학원·소규모 시설에서 흔함) |
-| **📖 / 🌟 / 🌱 / 💌 AI 페이지 안 보임** | (1) Ollama 다운로드 실패 또는 (2) `disable_all_llm=true` 설정 | (1) Actions 로그에서 `Ollama` 라인 확인 / (2) `Run workflow`에서 옵션 false로 재실행 |
+| **📖 / 🌟 / 🌱 / 💌 AI 페이지 안 보임** | (1) Ollama 다운로드 실패 또는 (2) `use_ai_features=false` 또는 개별 `use_X=false` 설정 | (1) Actions 로그에서 `Ollama` 라인 확인 / (2) `Run workflow`에서 해당 옵션을 `true`로 두고 재실행 |
 | 카카오 SSO 계정인데 쿠키 추출이 안 됨 | 카카오로 로그인한 뒤에도 키즈노트 sessionid 쿠키는 정상 발급됨 | 카카오 로그인 → 키즈노트 메인 화면으로 자동 이동 후 그 상태에서 F12 → 6단계 그대로 진행 |
 
 ### 정말 막혔다면

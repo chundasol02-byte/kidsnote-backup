@@ -21,18 +21,23 @@ name: Kidsnote → Notion mirror
 on:
   workflow_dispatch:
     inputs:
+      # Layout principle (2026-05-23 user feedback): default values reflect
+      # the "happy path" — leave everything as-is to get the full backup
+      # with AI dashboards. Operators only flip a value when they want
+      # something OFF. Descriptions are Korean and explain what each
+      # option does in plain language.
       limit:
-        description: "Only mirror the N most recent reports (leave empty for all)"
+        description: "최근 N개 알림장만 백업 (전체 백업이면 비워두세요. 예: 3 입력 시 최근 3개만)"
         required: false
         default: ""
       monthly_sample:
-        description: "Unit-test mode: pick one report per month for breadth coverage"
+        description: "테스트 모드 — 매월 알림장 1개씩만 처리 (셋업 검증·빠른 확인용. 평소엔 false)"
         required: false
         default: "false"
         type: choice
         options: ["false", "true"]
       force_refresh:
-        description: "Archive each report's existing Notion page before re-publish (use after prompt/LLM changes)"
+        description: "기존 노션 페이지 모두 archive 후 처음부터 재발행 (코드 업데이트·prompt 개선 후 사용. 평소엔 false)"
         required: false
         default: "false"
         type: choice
@@ -46,53 +51,54 @@ on:
       # other child's NAME (case-insensitive substring) to override.
       # Leave empty for single-child accounts.
       child_name:
-        description: "Pick a specific child by name substring (e.g. '유주'). Leave empty for single-child accounts or to use the first child."
+        description: "백업할 자녀 이름 일부 (예: '유주'). 자녀 1명이거나 첫 번째 자녀면 비워두세요"
         required: false
         default: ""
-      # ---- AI master toggle: plain backup + statistical dashboards only ----
-      # Easiest way to opt out of every AI-generated thing in one click.
-      # When ON, the 3 per-alimnota callouts (요약/자녀일기/부모편지) AND
-      # the 4 LLM dashboards are ALL skipped. The 3 statistical dashboards
-      # (📊 통계 / 📅 추억 / 🥗 영양) still get generated because they're
-      # not LLM-based. Useful for graduate backups, privacy-conscious
-      # operators, or anyone who prefers a clean "just the original
-      # alimnota text + photos + stats" mirror.
-      disable_all_llm:
-        description: "AI 가공 통째로 끄기 (단순 백업 + 📊 📅 🥗 통계 페이지만 생성)"
-        required: false
-        default: "false"
-        type: choice
-        options: ["false", "true"]
 
-      # ---- AI letter / LLM dashboard fine-grained toggles ----
-      # If you only want to drop *some* of the 4 LLM dashboards (and keep
-      # the per-alimnota callouts), use these individually. The master
-      # toggle above takes precedence — if `disable_all_llm=true`, these
+      # ---- AI master toggle (default ON) ----
+      # Default `true` per 2026-05-23 user feedback — operators who want
+      # the full experience (alimnota AI callouts + 4 LLM dashboards)
+      # shouldn't have to flip anything. Flip to `false` only for plain
+      # backup + 3 statistical dashboards (졸업 백업·사생활 보수적 등).
+      # The yaml passthrough below inverts this back to the existing
+      # DISABLE_ALL_LLM env var that fetch.py reads.
+      use_ai_features:
+        description: "AI 가공 사용 (요약·자녀일기·부모편지·LLM 대시보드 4개). 끄려면 false → 단순 백업 + 통계 3개만 생성"
+        required: false
+        default: "true"
+        type: choice
+        options: ["true", "false"]
+
+      # ---- 4 LLM dashboards individually (default ON) ----
+      # If you want all per-alimnota callouts (요약/일기/편지) but not
+      # *all* 4 dashboards (some read awkwardly post-graduation), flip
+      # the offending one to `false`. Default true = generate.
+      # The master use_ai_features above wins — when it's `false`, these
       # don't matter.
-      disable_growth_story:
-        description: "Skip 📖 매월 성장 스토리"
+      use_growth_story:
+        description: "📖 매월 성장 스토리 페이지 생성"
         required: false
-        default: "false"
+        default: "true"
         type: choice
-        options: ["false", "true"]
-      disable_milestones:
-        description: "Skip 🌟 마일스톤"
+        options: ["true", "false"]
+      use_milestones:
+        description: "🌟 우리 아이의 처음들 (마일스톤) 페이지 생성"
         required: false
-        default: "false"
+        default: "true"
         type: choice
-        options: ["false", "true"]
-      disable_interests:
-        description: "Skip 🌱 분기 관심사"
+        options: ["true", "false"]
+      use_interests:
+        description: "🌱 분기별 관심사 페이지 생성"
         required: false
-        default: "false"
+        default: "true"
         type: choice
-        options: ["false", "true"]
-      disable_teacher_thanks:
-        description: "Skip 💌 선생님께 감사 카드"
+        options: ["true", "false"]
+      use_teacher_thanks:
+        description: "💌 연도별 선생님께 감사 카드 페이지 생성"
         required: false
-        default: "false"
+        default: "true"
         type: choice
-        options: ["false", "true"]
+        options: ["true", "false"]
   # Auto-resume: a 1-year backfill can take 18-30 hours of compute,
   # but a GitHub-hosted runner caps a single job at 6 hours. Without
   # cron, the user would have to manually re-trigger after every cap.
@@ -146,18 +152,18 @@ jobs:
       # every milestone candidate. llama3.1 has stronger
       # instruction-following for the role-transformation tasks here.
       #
-      # When `disable_all_llm=true`, both steps below are skipped so
+      # When `use_ai_features=false`, both steps below are skipped so
       # AI-opt-out runs don't pay the ~5min model-pull cost.
       - name: Cache Ollama models
         id: ollama-cache
-        if: ${{ inputs.disable_all_llm != 'true' }}
+        if: ${{ inputs.use_ai_features != 'false' }}
         uses: actions/cache@v4
         with:
           path: ~/.ollama
           key: ollama-llama3.1-8b-v1
 
       - name: Install Ollama + pull model
-        if: ${{ inputs.disable_all_llm != 'true' }}
+        if: ${{ inputs.use_ai_features != 'false' }}
         run: |
           if ! command -v ollama >/dev/null 2>&1; then
             curl -fsSL https://ollama.com/install.sh | sh
@@ -185,17 +191,17 @@ jobs:
           OLLAMA_MODEL: "llama3.1:8b"
           PYTHONUNBUFFERED: "1"
           # ---- Multi-child / LLM-skip env passthrough ----
-          # Workflow inputs aren't visible to the Python process unless we
-          # forward them. The four DISABLE_* names match _truthy() parsing
-          # in fetch.py. KIDSNOTE_CHILD_NAME doubles as a repo-secret-style
-          # default for accounts that always want the same non-first child;
-          # the workflow input takes precedence at runtime when set.
+          # The user-facing inputs use the positive form (`use_ai_features`,
+          # `use_growth_story`, etc) and default to `true` so the happy
+          # path needs zero flipping. Internally fetch.py still reads the
+          # legacy negative env names (DISABLE_*); we invert here with
+          # ternary expressions instead of renaming everything downstream.
           KIDSNOTE_CHILD_NAME: ${{ inputs.child_name }}
-          DISABLE_ALL_LLM: ${{ inputs.disable_all_llm }}
-          DISABLE_GROWTH_STORY: ${{ inputs.disable_growth_story }}
-          DISABLE_MILESTONES: ${{ inputs.disable_milestones }}
-          DISABLE_INTERESTS: ${{ inputs.disable_interests }}
-          DISABLE_TEACHER_THANKS: ${{ inputs.disable_teacher_thanks }}
+          DISABLE_ALL_LLM: ${{ inputs.use_ai_features == 'false' && 'true' || 'false' }}
+          DISABLE_GROWTH_STORY: ${{ inputs.use_growth_story == 'false' && 'true' || 'false' }}
+          DISABLE_MILESTONES: ${{ inputs.use_milestones == 'false' && 'true' || 'false' }}
+          DISABLE_INTERESTS: ${{ inputs.use_interests == 'false' && 'true' || 'false' }}
+          DISABLE_TEACHER_THANKS: ${{ inputs.use_teacher_thanks == 'false' && 'true' || 'false' }}
         run: |
           set -eu
           ARGS=( "--auth-mode" "session-cookie-env" "--publish-to-notion" "--no-local-save" )
