@@ -7,6 +7,9 @@
 [![Runs on GitHub Actions](https://img.shields.io/badge/runs%20on-GitHub%20Actions-2088FF?logo=githubactions&logoColor=white)](#8단계-백업-실행)
 [![Notion](https://img.shields.io/badge/output-Notion-black?logo=notion)](#)
 
+> ⚡ **빨리 셋업만 끝내고 싶다 → [Quick Start (25분)](QUICK_START.md)**
+> 이 페이지는 자세한 설명·예외처리·트러블슈팅까지 다 담은 reference입니다. 길이로 압도되지 않게, 막힘없이 진행하실 분은 위 Quick Start로 가세요.
+
 ## 📸 이렇게 백업됩니다 (실제 결과 스크린샷)
 
 **알림장 한 건 — 4개 자동 callout + 원본 본문 + 사진/댓글**
