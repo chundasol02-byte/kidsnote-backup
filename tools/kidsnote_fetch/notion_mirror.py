@@ -189,9 +189,15 @@ def _strip_lead_meta(text: str) -> str:
         # 추출해- (extract)
         "추출해보겠습니다", "추출해 보겠습니다",
         # 변환해- (convert) — caught a parent-post diary that started
-        # with "아래와 같이 변환해 드릴게요."
+        # with "아래와 같이 변환해 드릴게요." Added "변환해 보겠습니다"
+        # variants 2026-05-23 after the production live DB shipped pages
+        # with leading "알림장의 내용을 일기로 변환해 보겠습니다." —
+        # llama3.1:8b loves this phrasing even though the prompt says
+        # not to.
         "변환해 드릴게요", "변환해드릴게요", "변환해드리겠습니다",
         "변환해 드리겠습니다", "변환합니다", "변환해 봅니다",
+        "변환해 보겠습니다", "변환해보겠습니다", "변환해 볼게요",
+        "변환해볼게요",
         # 작성해- (compose) — caught a parent-letter that started with
         # "알림장의 내용을 바탕으로 편지를 작성해 보겠습니다."
         "작성해 드릴게요", "작성해드릴게요", "작성해 보겠습니다",
@@ -207,6 +213,20 @@ def _strip_lead_meta(text: str) -> str:
         "구체적으로 인용", "한 단락으로",
         "다음과 같습니다", "다음과 같다",
     )
+    # Catch-all pattern: short opening sentence ending with "보겠습니다 /
+    # 보겠어요 / 드리겠습니다 / 드릴게요 / 드릴게 / 봅니다 / 답할게요" — these
+    # are the closing markers of a task restatement regardless of which
+    # verb prefix the model picked. The earlier explicit TASK_VERBS list
+    # still catches them when paired with the right verb, but llama3.1
+    # sometimes invents a paraphrase ("작성해보도록 하겠습니다") that
+    # the literal list misses. A short opening line + one of these endings
+    # is essentially always a meta sentence.
+    META_ENDINGS = (
+        "보겠습니다.", "보겠습니다", "보겠어요.", "보겠어요",
+        "드리겠습니다.", "드리겠습니다", "드리겠어요.", "드리겠어요",
+        "드릴게요.", "드릴게요", "드릴게.",
+        "봅니다.", "봅니다",
+    )
     lines = text.split("\n")
     out: list[str] = []
     started = False
@@ -220,6 +240,14 @@ def _strip_lead_meta(text: str) -> str:
                 continue
             if short and s.endswith(("다음과 같습니다.", "다음과 같다.", "다음과 같이.")):
                 continue
+            # Catch-all: short line ending with the meta closing marker
+            # AND containing "알림장" / "일기" / "편지" / "요약" / "본문" —
+            # i.e. references the task itself. This is conservative: a
+            # real first sentence of a diary/letter would rarely contain
+            # both a task noun and a meta ending.
+            if short and any(s.endswith(e) for e in META_ENDINGS):
+                if any(t in s for t in ("알림장", "일기", "편지", "요약", "본문", "내용을")):
+                    continue
             started = True
         out.append(line)
     return "\n".join(out).strip()
