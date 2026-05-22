@@ -546,10 +546,83 @@ class NotionMirror:
         self._prop_report_id: str | None = None
         self._prop_date: str | None = None
 
+    def _maybe_recover_db_id_from_page(self) -> None:
+        """Auto-recovery for the most common operator mistake: pasting the
+        parent page URL instead of the DB URL into NOTION_DATABASE_ID.
+
+        Notion returns 400 with ``"is a page, not a database. Use the
+        retrieve page API instead"`` when this happens. We catch that,
+        list the page's children, find the inline ``child_database``
+        block, and swap its id in as ``self.database_id``. Logs both
+        ids so the operator sees what got swapped and can update their
+        secret if they want the canonical form.
+        """
+        try:
+            probe = self.session.get(
+                f"{NOTION_API}/databases/{self.database_id}",
+                headers={
+                    "Authorization": f"Bearer {self.token}",
+                    "Notion-Version": NOTION_VERSION,
+                },
+                timeout=self.timeout,
+            )
+        except Exception:
+            return  # network hiccup; let downstream handle
+        if probe.status_code != 400:
+            return
+        body = probe.text or ""
+        if "is a page" not in body and "page, not a database" not in body:
+            return
+        page_id = self.database_id
+        _LOGGER.warning(
+            "NOTION_DATABASE_ID %s looks like a parent page id, not a "
+            "database id. Probing the page for an inline child_database...",
+            page_id,
+        )
+        try:
+            r = self.session.get(
+                f"{NOTION_API}/blocks/{page_id}/children",
+                headers={
+                    "Authorization": f"Bearer {self.token}",
+                    "Notion-Version": NOTION_VERSION,
+                },
+                params={"page_size": 50},
+                timeout=self.timeout,
+            )
+            r.raise_for_status()
+        except Exception as e:
+            raise RuntimeError(
+                f"NOTION_DATABASE_ID {page_id!r} is a page id but we "
+                f"couldn't list its blocks to auto-recover: {e}"
+            ) from e
+        children = r.json().get("results") or []
+        for blk in children:
+            if blk.get("type") == "child_database":
+                real_id = (blk.get("id") or "").replace("-", "")
+                if not real_id:
+                    continue
+                _LOGGER.info(
+                    "✅ Auto-recovered Notion DB id from parent page. "
+                    "Update your NOTION_DATABASE_ID secret to %s for the "
+                    "canonical (no auto-recovery) form.",
+                    real_id,
+                )
+                self.database_id = real_id
+                return
+        raise RuntimeError(
+            f"NOTION_DATABASE_ID {page_id!r} is a page but contains no "
+            "inline database block. Open the page in Notion, hover the "
+            "DB title, click ↗ Open as full page, and use the URL that "
+            "now contains ?v=... — README 5-1 has visuals."
+        )
+
     def _resolve_schema(self) -> None:
         """Discover the title / number / date property names from the live DB."""
         if self._prop_report_id is not None:
             return  # already resolved
+        # First, sanity-check the id format and auto-recover from the
+        # "operator pasted parent-page id" mistake before the real GET.
+        self._maybe_recover_db_id_from_page()
         r = self.session.get(
             f"{NOTION_API}/databases/{self.database_id}",
             headers={
