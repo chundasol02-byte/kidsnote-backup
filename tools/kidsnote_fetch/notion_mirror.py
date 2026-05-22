@@ -1373,53 +1373,61 @@ class NotionMirror:
         cfg = _get_ollama()
         if cfg is None:
             return None
-        try:
-            r = requests.post(
-                f"{cfg['host']}/api/generate",
-                json={
-                    "model": cfg["model"],
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {
-                        "temperature": temperature,
-                        "num_predict": num_predict,
+        # Retry once with a slightly higher temperature on empty / cjk-leak
+        # / too-short response. llama3.1:8b on CPU sometimes produces a
+        # short or English-leaning output for parent-written Korean
+        # alimnotas on the first attempt; the retry catches most of those.
+        log = logging.getLogger(__name__)
+        last_reason = "unknown"
+        for attempt, temp in enumerate((temperature, min(1.0, temperature + 0.25)), start=1):
+            try:
+                r = requests.post(
+                    f"{cfg['host']}/api/generate",
+                    json={
+                        "model": cfg["model"],
+                        "prompt": prompt,
+                        "stream": False,
+                        "options": {
+                            "temperature": temp,
+                            "num_predict": num_predict,
+                        },
                     },
-                },
-                timeout=timeout,
-            )
-            r.raise_for_status()
-            out = (r.json().get("response") or "").strip()
-        except Exception as e:
-            logging.getLogger(__name__).debug("ollama call failed: %s", e)
-            return None
-        if not out:
-            return None
-        # Drop wrapping ``"`` and leading dashes/asterisks
-        out = out.strip().strip('"').strip("'").lstrip("- ").lstrip("* ").strip()
-        # If the model produced analysis + a clean final block prefixed
-        # with a section label, keep only what's after the last label.
-        if final_labels:
-            out = _extract_after_final_label(out, final_labels)
-        # Drop task-restatement lead-ins ("...써봅니다.").
-        if strip_meta:
-            out = _strip_lead_meta(out)
-        # Strip any Chinese hanja the model leaked (qwen2.5 occasionally
-        # falls back to Chinese mid-sentence). Hangul/punctuation kept.
-        original_len = len(out)
-        out, cjk_removed = _strip_cjk(out)
-        if cjk_removed and original_len > 0:
-            ratio = cjk_removed / original_len
-            logging.getLogger(__name__).debug(
-                "ollama: stripped %d CJK chars (%.0f%% of output)",
-                cjk_removed, ratio * 100,
-            )
-            # If the LLM essentially answered in Chinese (>20% of chars),
-            # the remaining Korean fragments aren't trustworthy — drop it.
-            if ratio > 0.20:
-                return None
-            # Collapse the multi-space gaps left behind.
-            out = " ".join(out.split())
-        if len(out) < 5:
+                    timeout=timeout,
+                )
+                r.raise_for_status()
+                out = (r.json().get("response") or "").strip()
+            except Exception as e:
+                last_reason = f"timeout_or_http({type(e).__name__})"
+                log.warning("ollama call attempt %d failed: %s", attempt, e)
+                continue
+            if not out:
+                last_reason = "empty_response"
+                continue
+            # Drop wrapping ``"`` and leading dashes/asterisks
+            out = out.strip().strip('"').strip("'").lstrip("- ").lstrip("* ").strip()
+            # If the model produced analysis + a clean final block prefixed
+            # with a section label, keep only what's after the last label.
+            if final_labels:
+                out = _extract_after_final_label(out, final_labels)
+            # Drop task-restatement lead-ins ("...써봅니다.").
+            if strip_meta:
+                out = _strip_lead_meta(out)
+            # Strip any Chinese hanja the model leaked
+            original_len = len(out)
+            out, cjk_removed = _strip_cjk(out)
+            if cjk_removed and original_len > 0:
+                ratio = cjk_removed / original_len
+                if ratio > 0.20:
+                    last_reason = f"cjk_leak({cjk_removed}/{original_len})"
+                    continue
+                # Collapse the multi-space gaps left behind.
+                out = " ".join(out.split())
+            if len(out) < 5:
+                last_reason = f"too_short({len(out)})"
+                continue
+            break  # success
+        else:
+            log.warning("ollama giving up after retries (reason=%s)", last_reason)
             return None
         # Truncate cleanly at sentence boundary so the last sentence isn't
         # mid-cut. Previously a parent-letter callout shipped truncated as
@@ -1581,44 +1589,54 @@ class NotionMirror:
             "요약: 운동의 장점과 걷기의 효능을 친구들과 함께 배웠다.\n\n"
             f"[지금 요약할 본문]\n본문: {text[:1500]}\n\n요약:"
         )
-        try:
-            r = requests.post(
-                f"{cfg['host']}/api/generate",
-                json={
-                    "model": cfg["model"],
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {"temperature": 0.3, "num_predict": 80},
-                },
-                timeout=60,
-            )
-            r.raise_for_status()
-            out = (r.json().get("response") or "").strip()
+        # Retry once on empty / cjk-leak / short response. CPU Ollama
+        # output for parent-written Korean alimnotas is occasionally short
+        # or English-leaning on cold-start; a second attempt with slightly
+        # different temperature catches most of those without bloating
+        # backup time too much.
+        log = logging.getLogger(__name__)
+        last_reason = "unknown"
+        for attempt, temp in enumerate((0.3, 0.55), start=1):
+            try:
+                r = requests.post(
+                    f"{cfg['host']}/api/generate",
+                    json={
+                        "model": cfg["model"],
+                        "prompt": prompt,
+                        "stream": False,
+                        "options": {"temperature": temp, "num_predict": 80},
+                    },
+                    timeout=120,
+                )
+                r.raise_for_status()
+                out = (r.json().get("response") or "").strip()
+            except Exception as e:
+                last_reason = f"timeout_or_http({type(e).__name__})"
+                log.warning("summary attempt %d failed: %s", attempt, e)
+                continue
             if not out:
-                return None
+                last_reason = "empty_response"
+                continue
             # Drop anything after the first line / colon-style prefix.
             first = out.split("\n")[0].strip().lstrip("- ").lstrip("* ")
             # Guard against junk responses
             if len(first) < 5 or len(first) > 200:
-                return None
-            # Chinese-leak filter — same as _ask_ollama uses. qwen2.5 / hermes3
-            # occasionally produce Korean-Chinese mixed output even when asked
-            # for Korean only. _summary_oneliner used to skip this filter
-            # (because it bypassed _ask_ollama for control over the prompt
-            # shape) — that's how we shipped the "运动好处讨论" sentence into a
-            # live page during the multi-child E2E test (2026-05-21).
+                last_reason = f"length_oob({len(first)})"
+                continue
+            # Chinese-leak filter
             original_len = len(first)
             first, cjk_removed = _strip_cjk(first)
             if cjk_removed and original_len > 0:
                 if cjk_removed / original_len > 0.20:
-                    return None  # essentially Chinese output, reject
+                    last_reason = f"cjk_leak({cjk_removed}/{original_len})"
+                    continue
                 first = " ".join(first.split())  # collapse gaps
                 if len(first) < 5:
-                    return None
+                    last_reason = "post_cjk_too_short"
+                    continue
             return first
-        except Exception as e:
-            logging.getLogger(__name__).debug("ollama summary skipped: %s", e)
-            return None
+        log.warning("summary giving up after retries (reason=%s)", last_reason)
+        return None
 
     @classmethod
     def _summarize_text_kiwi(cls, kiwi: Any, text: str, max_chars: int) -> str:
