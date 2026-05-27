@@ -18,6 +18,9 @@
 
 name: Kidsnote → Notion mirror
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  
 on:
   workflow_dispatch:
     inputs:
@@ -136,10 +139,10 @@ jobs:
     timeout-minutes: 720
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
@@ -169,7 +172,7 @@ jobs:
       - name: Cache Ollama models
         id: ollama-cache
         if: ${{ inputs.use_ai_features != 'false' }}
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.ollama
           key: ollama-llama3.1-8b-v2
