@@ -17,10 +17,7 @@
 #   NOTION_DATABASE_ID        32-char hex id from your Notion DB URL
 
 name: Kidsnote → Notion mirror
-
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  
+ 
 on:
   workflow_dispatch:
     inputs:
