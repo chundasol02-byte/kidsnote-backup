@@ -200,7 +200,7 @@ jobs:
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
           # Tell notion_mirror.py where Ollama lives + which model to use
           OLLAMA_HOST: "http://localhost:11434"
-          OLLAMA_MODEL: "qwen2.5:1.5b"
+          OLLAMA_MODEL: "llama3.1:8b"
           PYTHONUNBUFFERED: "1"
           # ---- Multi-child / LLM-skip env passthrough ----
           # The user-facing inputs use the positive form (`use_ai_features`,
