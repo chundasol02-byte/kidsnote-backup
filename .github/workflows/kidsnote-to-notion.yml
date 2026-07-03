@@ -144,13 +144,38 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      - name: Install fetcher deps + image helpers
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install fetcher deps + image helpers + playwright
         run: |
           python -m pip install --upgrade pip
           pip install -r tools/kidsnote_fetch/requirements.txt
           # Pillow + piexif for in-memory EXIF strip + auto-compress
           # to Notion's 5 MiB per-file cap.
-          pip install pillow piexif
+          pip install pillow piexif playwright
+          
+      - name: Install Playwright Chromium Browser
+        run: |
+          python -m playwright install chromium
+
+      - name: Login to Kidsnote via Playwright
+        env:
+          KIDSNOTE_ID: ${{ secrets.KIDSNOTE_ID }}
+          KIDSNOTE_PASSWORD: ${{ secrets.KIDSNOTE_PASSWORD }}
+        run: |
+          python tools/kidsnote_fetch/login_playwright.py
+
+      - name: Mirror Kidsnote -> Notion
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+          # ⚠️ 중요: 기존에 있던 KIDSNOTE_SESSION_COOKIE: ${{ secrets... }} 라인이 있다면 지워줍니다.
+          # 지워야 앞선 플레이라이트가 토스한 환경변수를 정상적으로 이어받습니다.
+        run: |
+          python tools/kidsnote_fetch/fetch.py
 
       # ---- Ollama for body summary + LLM dashboards ----
       # Local LLM runs inside the runner — no API key / cost.
