@@ -19,11 +19,11 @@ from playwright.async_api import async_playwright, TimeoutError
 LOGIN_URL = "https://www.kidsnote.com/"
 
 # GitHub Secrets에서 주입받을 계정 정보
-ID = os.environ.get("KIDSNOTE_ID")
+EMAIL = os.environ.get("KIDSNOTE_EMAIL") or os.environ.get("KIDSNOTE_ID")
 PASSWORD = os.environ.get("KIDSNOTE_PASSWORD")
 
-if not ID:
-    print("[-] KIDSNOTE_ID not found in environment variables.")
+if not EMAIL:
+    print("[-] KIDSNOTE_EMAIL not found in environment variables.")
     sys.exit(1)
 
 if not PASSWORD:
@@ -83,11 +83,14 @@ async def login():
         page = await context.new_page()
 
         print("[+] Opening Kidsnote Main/Login Page...")
-        await page.goto(LOGIN_URL, wait_until="networkidle")
+        await page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=60000)
 
+        # 입력창이 나타날 때까지 명시적으로 잠시 대기
+        await page.wait_for_selector('input[name="username"]', timeout=10000)
+        
         # 아이디 입력
         print("[+] Filling username...")
-        await page.locator('input[name="username"]').fill(ID)
+        await page.locator('input[name="username"]').fill(EMAIL)
 
         # 비밀번호 입력
         print("[+] Filling password...")
