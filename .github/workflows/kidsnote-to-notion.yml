@@ -1,31 +1,23 @@
 # Kidsnote → Notion mirror
 #
-# MANUAL EXECUTION ONLY. Kidsnote's login flow can no longer be driven by
-# a headless HTTP client (the page is a Next.js SPA). So the workflow
-# relies on a `sessionid` cookie the operator extracts manually from a
-# logged-in browser session (Chrome F12 → Application → Cookies) and
-# stores in the KIDSNOTE_SESSION_COOKIE secret. That cookie typically
-# lasts ~30 days; when it expires, re-extract and re-run.
+# AUTOMATED LOGIN VIA PLAYWRIGHT. No longer requires manual cookie extraction.
+# Stores login credentials in KIDSNOTE_ID and KIDSNOTE_PASSWORD secrets.
 #
 # Dedup: each new Notion page records the kidsnote `Report ID`. Subsequent
 # runs query the DB once at startup and skip reports whose id is already
 # stored, so re-running is safe and idempotent.
 #
 # Required GitHub repository secrets (Settings → Secrets and variables → Actions):
-#   KIDSNOTE_SESSION_COOKIE   value of the `sessionid` cookie for kidsnote.com
-#   NOTION_TOKEN              internal integration token from notion.so/profile/integrations
-#   NOTION_DATABASE_ID        32-char hex id from your Notion DB URL
+#   KIDSNOTE_ID           Kidsnote login email/ID
+#   KIDSNOTE_PASSWORD     Kidsnote login password
+#   NOTION_TOKEN          internal integration token from notion.so/profile/integrations
+#   NOTION_DATABASE_ID    32-char hex id from your Notion DB URL
 
 name: Kidsnote → Notion mirror
  
 on:
   workflow_dispatch:
     inputs:
-      # Layout principle (2026-05-23 user feedback): default values reflect
-      # the "happy path" — leave everything as-is to get the full backup
-      # with AI dashboards. Operators only flip a value when they want
-      # something OFF. Descriptions are Korean and explain what each
-      # option does in plain language.
       limit:
         description: "최근 N개 알림장만 백업 (전체 백업이면 비워두세요. 예: 3 입력 시 최근 3개만)"
         required: false
@@ -42,42 +34,16 @@ on:
         default: "false"
         type: choice
         options: ["false", "true"]
-      # ---- Multi-child accounts ----
-      # If your kidsnote account has more than one child, the script needs
-      # to know which one to mirror. The sessionid cookie itself isn't
-      # child-scoped (it doesn't matter which child you "select" in the
-      # kidsnote web UI before extracting the cookie), so the script
-      # defaults to the first child the API returns. Set this to the
-      # other child's NAME (case-insensitive substring) to override.
-      # Leave empty for single-child accounts.
       child_name:
         description: "자녀 1명이면 비워두세요. 자녀 2명 이상이면 백업할 아이 이름 일부 입력 (예: '하린')"
         required: false
         default: ""
-
-      # ---- AI master toggle (default ON) ----
-      # Default `true` per 2026-05-23 user feedback — operators who want
-      # the full experience (alimnota AI callouts + 4 LLM dashboards)
-      # shouldn't have to flip anything. Flip to `false` only for plain
-      # backup + 3 statistical dashboards (졸업 백업·사생활 보수적 등).
-      # The yaml passthrough below inverts this back to the existing
-      # DISABLE_ALL_LLM env var that fetch.py reads.
       use_ai_features:
         description: "AI 가공 — 알림장 안(💭요약·🧒자녀일기·👨‍👩‍👧부모편지) + 별도 페이지 4개(📖성장스토리·🌟마일스톤·🌱관심사·💌선생님께). false면 단순 백업 + 통계 3개(📊통계·📅작년추억·🥗영양)만"
         required: false
         default: "true"
         type: choice
         options: ["true", "false"]
-
-      # ---- 4 LLM dashboards individually (default ON) ----
-      # If you want all per-alimnota callouts (요약/일기/편지) but not
-      # *all* 4 dashboards (some read awkwardly post-graduation), flip
-      # the offending one to `false`. Default true = generate.
-      # The master use_ai_features above wins — when it's `false`, these
-      # don't matter. NOTE: these only control the standalone dashboard
-      # pages. The 3 per-alimnota callouts (요약·자녀일기·부모의편지)
-      # only turn off via use_ai_features=false, since they share the
-      # same Ollama pipeline.
       use_growth_story:
         description: "📖 매월 성장 스토리 별도 페이지 생성"
         required: false
@@ -102,19 +68,7 @@ on:
         default: "true"
         type: choice
         options: ["true", "false"]
-  # Auto-resume: a 1-year backfill can take 18-30 hours of compute,
-  # but a GitHub-hosted runner caps a single job at 6 hours. Without
-  # cron, the user would have to manually re-trigger after every cap.
-  # With this schedule the workflow self-resumes every 4 hours; the
-  # script tracks elapsed time and exits cleanly at 5h30m so the next
-  # cron run can pick up via dedup. Once the backup is complete each
-  # cron run finishes in ~1-2 minutes (no new alimnotas to process).
-  # 2026-05-25: cron interval widened 4h → 6h. Each cycle does ~5h work
-  # (publish loop + dashboards within the 6h GHA cap). At 4h interval,
-  # consecutive cycles queued up and the older ones got auto-cancelled —
-  # losing in-flight Notion commits and confusing operators ("backup
-  # stopped at date X"). At 6h interval, each cycle has time to drain
-  # before the next one fires.
+
   schedule:
     - cron: "15 */6 * * *"
 
@@ -128,11 +82,6 @@ concurrency:
 jobs:
   mirror:
     runs-on: ubuntu-latest
-    # Long timeout: a 1-year backfill with photo-heavy reports
-    # (avg 15-25 images/report + Ollama-driven LLM dashboards) ran past
-    # the 6h cap on the first try, so we ask for 12h. GitHub-hosted
-    # runners cap public repos at 35 hours of wall-time per workflow.
-    # Re-runs after the first backfill are fast (dedup skips done).
     timeout-minutes: 720
 
     steps:
@@ -153,8 +102,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r tools/kidsnote_fetch/requirements.txt
-          # Pillow + piexif for in-memory EXIF strip + auto-compress
-          # to Notion's 5 MiB per-file cap.
           pip install pillow piexif playwright
           
       - name: Install Playwright Chromium Browser
@@ -168,29 +115,7 @@ jobs:
         run: |
           python tools/kidsnote_fetch/login_playwright.py
 
-      - name: Mirror Kidsnote -> Notion
-        env:
-          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
-          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
-          # ⚠️ 중요: 기존에 있던 KIDSNOTE_SESSION_COOKIE: ${{ secrets... }} 라인이 있다면 지워줍니다.
-          # 지워야 앞선 플레이라이트가 토스한 환경변수를 정상적으로 이어받습니다.
-        run: |
-          python tools/kidsnote_fetch/fetch.py
-
       # ---- Ollama for body summary + LLM dashboards ----
-      # Local LLM runs inside the runner — no API key / cost.
-      #
-      # llama3.1:8b (~4.7GB): reverted from qwen2.5:14b on 2026-05-23
-      # after production runs proved 14B is too slow on the GHA CPU
-      # runner — alimnota publish + 4 LLM dashboards consistently ran
-      # 7-9 hours, hitting the 6h hard cap mid-dashboard and blocking
-      # subsequent cron runs (concurrency was queueing then cancelling).
-      # The new defensive filters (cjk + english_leak + input_copy +
-      # retry-with-temperature) make 8B's quality acceptable; we trade
-      # the 14B perspective wins for a backup that actually finishes.
-      #
-      # When `use_ai_features=false`, both steps below are skipped so
-      # AI-opt-out runs don't pay the ~5min model-pull cost.
       - name: Cache Ollama models
         id: ollama-cache
         if: ${{ inputs.use_ai_features != 'false' }}
@@ -205,9 +130,7 @@ jobs:
           if ! command -v ollama >/dev/null 2>&1; then
             curl -fsSL https://ollama.com/install.sh | sh
           fi
-          # Start ollama in background
           ollama serve > /tmp/ollama.log 2>&1 &
-          # Wait for ready (max 30s)
           for i in {1..30}; do
             if curl -s http://localhost:11434/api/version >/dev/null 2>&1; then
               echo "ollama ready after ${i}s"
@@ -215,24 +138,16 @@ jobs:
             fi
             sleep 1
           done
-          # Pull model (cached after first run, ~5min first time)
           ollama pull llama3.1:8b
 
-      - name: Mirror Kidsnote → Notion
+      - name: Mirror Kidsnote → Notion (Execution)
         env:
-          KIDSNOTE_SESSION_COOKIE: ${{ secrets.KIDSNOTE_SESSION_COOKIE }}
+          # 수동 비밀 키 대신 앞선 스텝에서 생성된 플레이라이트 환경 변수를 이어받습니다.
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
-          # Tell notion_mirror.py where Ollama lives + which model to use
           OLLAMA_HOST: "http://localhost:11434"
           OLLAMA_MODEL: "llama3.1:8b"
           PYTHONUNBUFFERED: "1"
-          # ---- Multi-child / LLM-skip env passthrough ----
-          # The user-facing inputs use the positive form (`use_ai_features`,
-          # `use_growth_story`, etc) and default to `true` so the happy
-          # path needs zero flipping. Internally fetch.py still reads the
-          # legacy negative env names (DISABLE_*); we invert here with
-          # ternary expressions instead of renaming everything downstream.
           KIDSNOTE_CHILD_NAME: ${{ inputs.child_name }}
           DISABLE_ALL_LLM: ${{ inputs.use_ai_features == 'false' && 'true' || 'false' }}
           DISABLE_GROWTH_STORY: ${{ inputs.use_growth_story == 'false' && 'true' || 'false' }}
@@ -242,7 +157,6 @@ jobs:
         run: |
           set -eu
           ARGS=( "--auth-mode" "session-cookie-env" "--publish-to-notion" "--no-local-save" )
-
           ARGS+=( "--child-id" "5305112" )
 
           if [ -n "${{ inputs.limit }}" ]; then
@@ -259,11 +173,10 @@ jobs:
       - name: Verify required secrets were present
         if: failure()
         env:
-          KIDSNOTE_SESSION_COOKIE: ${{ secrets.KIDSNOTE_SESSION_COOKIE }}
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
         run: |
-          for s in KIDSNOTE_SESSION_COOKIE NOTION_TOKEN NOTION_DATABASE_ID; do
+          for s in NOTION_TOKEN NOTION_DATABASE_ID; do
             if [ -z "${!s:-}" ]; then
               echo "::error::repo secret '$s' is empty or unset"
             fi
