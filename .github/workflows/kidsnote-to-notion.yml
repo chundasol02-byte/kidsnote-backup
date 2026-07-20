@@ -1,75 +1,45 @@
 # Kidsnote → Notion mirror
 #
-# AUTOMATED LOGIN VIA PLAYWRIGHT. No longer requires manual cookie extraction.
-# Stores login credentials in KIDSNOTE_ID and KIDSNOTE_PASSWORD secrets.
+# AI 기능 비활성화 버전
 #
-# Dedup: each new Notion page records the kidsnote `Report ID`. Subsequent
-# runs query the DB once at startup and skip reports whose id is already
-# stored, so re-running is safe and idempotent.
+# 동작:
+# - Kidsnote 알림장 원문 및 사진을 Notion에 백업
+# - 알림장 AI 요약·자녀 일기·부모 편지 생성 안 함
+# - 성장 스토리·마일스톤·관심사·선생님 감사 페이지 생성 안 함
+# - Ollama 설치 및 실행 안 함
 #
-# Required GitHub repository secrets (Settings → Secrets and variables → Actions):
-#   KIDSNOTE_ID           Kidsnote login email/ID
-#   KIDSNOTE_PASSWORD     Kidsnote login password
-#   NOTION_TOKEN          internal integration token from notion.so/profile/integrations
-#   NOTION_DATABASE_ID    32-char hex id from your Notion DB URL
+# Required GitHub repository secrets:
+#   KIDSNOTE_ID
+#   KIDSNOTE_PASSWORD
+#   NOTION_TOKEN
+#   NOTION_DATABASE_ID
 
 name: Kidsnote → Notion mirror
- 
+
 on:
   workflow_dispatch:
     inputs:
       limit:
-        description: "최근 N개 알림장만 백업 (전체 백업이면 비워두세요. 예: 3 입력 시 최근 3개만)"
+        description: "최근 N개 알림장만 백업 (전체 백업이면 비워두세요)"
         required: false
         default: ""
-      monthly_sample:
-        description: "테스트 모드 — 매월 알림장 1개씩만 처리 (셋업 검증·빠른 확인용. 평소엔 false)"
-        required: false
-        default: "false"
-        type: choice
-        options: ["false", "true"]
-      force_refresh:
-        description: "기존 노션 페이지 모두 archive 후 처음부터 재발행 (코드 업데이트·prompt 개선 후 사용. 평소엔 false)"
-        required: false
-        default: "false"
-        type: choice
-        options: ["false", "true"]
-      child_name:
-        description: "자녀 1명이면 비워두세요. 자녀 2명 이상이면 백업할 아이 이름 일부 입력 (예: '하린')"
-        required: false
-        default: ""
-      use_ai_features:
-        description: "AI 가공 — 알림장 안(💭요약·🧒자녀일기·👨‍👩‍👧부모편지) + 별도 페이지 4개(📖성장스토리·🌟마일스톤·🌱관심사·💌선생님께). false면 단순 백업 + 통계 3개(📊통계·📅작년추억·🥗영양)만"
-        required: false
-        default: "true"
-        type: choice
-        options: ["true", "false"]
-      use_growth_story:
-        description: "📖 매월 성장 스토리 별도 페이지 생성"
-        required: false
-        default: "true"
-        type: choice
-        options: ["true", "false"]
-      use_milestones:
-        description: "🌟 우리 아이의 처음들(마일스톤) 별도 페이지 생성"
-        required: false
-        default: "true"
-        type: choice
-        options: ["true", "false"]
-      use_interests:
-        description: "🌱 분기별 관심사 별도 페이지 생성"
-        required: false
-        default: "true"
-        type: choice
-        options: ["true", "false"]
-      use_teacher_thanks:
-        description: "💌 연도별 선생님께 감사 카드 별도 페이지 생성"
-        required: false
-        default: "true"
-        type: choice
-        options: ["true", "false"]
 
-schedule:
+      monthly_sample:
+        description: "테스트 모드 — 매월 알림장 1개씩만 처리"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+      child_name:
+        description: "자녀 2명 이상인 경우 백업할 아이 이름 일부 입력"
+        required: false
+        default: ""
+
+  schedule:
+    # 매주 일요일 오전 3시 15분, 한국시간
     - cron: "15 3 * * 0"
       timezone: "Asia/Seoul"
 
@@ -86,7 +56,8 @@ jobs:
     timeout-minutes: 720
 
     steps:
-      - uses: actions/checkout@v5
+      - name: Checkout repository
+        uses: actions/checkout@v5
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -99,86 +70,137 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Install fetcher deps + image helpers + playwright
+      - name: Install dependencies
         run: |
+          set -euo pipefail
+
           python -m pip install --upgrade pip
           pip install -r tools/kidsnote_fetch/requirements.txt
           pip install pillow piexif playwright
-          
-      - name: Install Playwright Chromium Browser
+
+      - name: Install Playwright Chromium
         run: |
-          python -m playwright install chromium
+          set -euo pipefail
+
+          python -m playwright install --with-deps chromium
+
+      - name: Verify required secrets
+        env:
+          KIDSNOTE_ID: ${{ secrets.KIDSNOTE_ID }}
+          KIDSNOTE_PASSWORD: ${{ secrets.KIDSNOTE_PASSWORD }}
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+        run: |
+          set -euo pipefail
+
+          MISSING_SECRET=false
+
+          for secret_name in \
+            KIDSNOTE_ID \
+            KIDSNOTE_PASSWORD \
+            NOTION_TOKEN \
+            NOTION_DATABASE_ID
+          do
+            if [ -z "${!secret_name:-}" ]; then
+              echo "::error::Repository secret '${secret_name}' is empty or unset"
+              MISSING_SECRET=true
+            fi
+          done
+
+          if [ "${MISSING_SECRET}" = "true" ]; then
+            exit 1
+          fi
 
       - name: Login to Kidsnote via Playwright
         env:
           KIDSNOTE_ID: ${{ secrets.KIDSNOTE_ID }}
           KIDSNOTE_PASSWORD: ${{ secrets.KIDSNOTE_PASSWORD }}
         run: |
+          set -euo pipefail
+
           python tools/kidsnote_fetch/login_playwright.py
 
-      # ---- Ollama for body summary + LLM dashboards ----
-      - name: Cache Ollama models
-        id: ollama-cache
-        if: ${{ inputs.use_ai_features != 'false' }}
-        uses: actions/cache@v5
-        with:
-          path: ~/.ollama
-          key: ollama-llama3.1-8b-v2
-
-      - name: Install Ollama + pull model
-        if: ${{ inputs.use_ai_features != 'false' }}
-        run: |
-          if ! command -v ollama >/dev/null 2>&1; then
-            curl -fsSL https://ollama.com/install.sh | sh
-          fi
-          ollama serve > /tmp/ollama.log 2>&1 &
-          for i in {1..30}; do
-            if curl -s http://localhost:11434/api/version >/dev/null 2>&1; then
-              echo "ollama ready after ${i}s"
-              break
-            fi
-            sleep 1
-          done
-          ollama pull llama3.1:8b
-
-      - name: Mirror Kidsnote → Notion (Execution)
+      - name: Mirror Kidsnote → Notion
         env:
-          # 수동 비밀 키 대신 앞선 스텝에서 생성된 플레이라이트 환경 변수를 이어받습니다.
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
-          OLLAMA_HOST: "http://localhost:11434"
-          OLLAMA_MODEL: "llama3.1:8b"
-          PYTHONUNBUFFERED: "1"
-          KIDSNOTE_CHILD_NAME: ${{ inputs.child_name }}
-          DISABLE_ALL_LLM: ${{ inputs.use_ai_features == 'false' && 'true' || 'false' }}
-          DISABLE_GROWTH_STORY: ${{ inputs.use_growth_story == 'false' && 'true' || 'false' }}
-          DISABLE_MILESTONES: ${{ inputs.use_milestones == 'false' && 'true' || 'false' }}
-          DISABLE_INTERESTS: ${{ inputs.use_interests == 'false' && 'true' || 'false' }}
-          DISABLE_TEACHER_THANKS: ${{ inputs.use_teacher_thanks == 'false' && 'true' || 'false' }}
-        run: |
-          set -eu
-          ARGS=( "--auth-mode" "session-cookie-env" "--publish-to-notion" "--no-local-save" )
-          ARGS+=( "--child-id" "5305112" )
 
-          if [ -n "${{ inputs.limit }}" ]; then
-            ARGS+=( "--limit" "${{ inputs.limit }}" )
+          PYTHONUNBUFFERED: "1"
+
+          # 수동 실행에서만 입력값 적용
+          KIDSNOTE_CHILD_NAME: >-
+            ${{ github.event_name == 'workflow_dispatch'
+                && inputs.child_name
+                || '' }}
+
+          RUN_LIMIT: >-
+            ${{ github.event_name == 'workflow_dispatch'
+                && inputs.limit
+                || '' }}
+
+          MONTHLY_SAMPLE: >-
+            ${{ github.event_name == 'workflow_dispatch'
+                && inputs.monthly_sample == 'true'
+                && 'true'
+                || 'false' }}
+
+          # ─────────────────────────────────────
+          # AI 기능 전체 강제 비활성화
+          # ─────────────────────────────────────
+
+          # 알림장 내부 AI 요약·자녀 일기·부모 편지 비활성화
+          DISABLE_ALL_LLM: "true"
+
+          # AI 별도 페이지 비활성화
+          DISABLE_GROWTH_STORY: "true"
+          DISABLE_MILESTONES: "true"
+          DISABLE_INTERESTS: "true"
+          DISABLE_TEACHER_THANKS: "true"
+
+        run: |
+          set -euo pipefail
+
+          ARGS=(
+            "--auth-mode"
+            "session-cookie-env"
+            "--publish-to-notion"
+            "--no-local-save"
+            "--child-id"
+            "5305112"
+          )
+
+          if [ -n "${RUN_LIMIT}" ]; then
+            ARGS+=(
+              "--limit"
+              "${RUN_LIMIT}"
+            )
           fi
-          if [ "${{ inputs.monthly_sample }}" = "true" ]; then
-            ARGS+=( "--monthly-sample" )
+
+          if [ "${MONTHLY_SAMPLE}" = "true" ]; then
+            ARGS+=(
+              "--monthly-sample"
+            )
           fi
-          if [ "${{ inputs.force_refresh }}" = "true" ]; then
-            ARGS+=( "--force-refresh" )
-          fi
+
+          echo "============================================"
+          echo "Kidsnote → Notion backup"
+          echo "AI functions: disabled"
+          echo "Growth story: disabled"
+          echo "Milestones: disabled"
+          echo "Interests: disabled"
+          echo "Teacher thanks: disabled"
+          echo "============================================"
+
           python tools/kidsnote_fetch/fetch.py "${ARGS[@]}"
 
-      - name: Verify required secrets were present
+      - name: Upload diagnostic logs on failure
         if: failure()
-        env:
-          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
-          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
-        run: |
-          for s in NOTION_TOKEN NOTION_DATABASE_ID; do
-            if [ -z "${!s:-}" ]; then
-              echo "::error::repo secret '$s' is empty or unset"
-            fi
-          done
+        uses: actions/upload-artifact@v4
+        with:
+          name: kidsnote-backup-failure-logs
+          path: |
+            /tmp/ollama.log
+            tools/kidsnote_fetch/*.log
+            tools/kidsnote_fetch/**/*.log
+          if-no-files-found: ignore
+          retention-days: 7
