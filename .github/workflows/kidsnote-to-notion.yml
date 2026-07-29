@@ -1,18 +1,17 @@
-# Kidsnote → Notion mirror
-#
-# AI 기능 비활성화 버전
+# Kidsnote → Notion mirror (태민 & 태강 분리 저장)
 #
 # 동작:
+# - 태민(ID: 5305112) -> NOTION_DATABASE_ID 로 백업
+# - 태강(ID: 5305117) -> NOTION_DATABASE_ID_2 로 백업
 # - Kidsnote 알림장 원문 및 사진을 Notion에 백업
-# - 알림장 AI 요약·자녀 일기·부모 편지 생성 안 함
-# - 성장 스토리·마일스톤·관심사·선생님 감사 페이지 생성 안 함
-# - Ollama 설치 및 실행 안 함
+# - AI 기능 및 Ollama 비활성화
 #
 # Required GitHub repository secrets:
 #   KIDSNOTE_ID
 #   KIDSNOTE_PASSWORD
 #   NOTION_TOKEN
-#   NOTION_DATABASE_ID
+#   NOTION_DATABASE_ID       (태민 DB)
+#   NOTION_DATABASE_ID_2     (태강 DB)
 
 name: Kidsnote → Notion mirror
 
@@ -33,15 +32,19 @@ on:
           - "false"
           - "true"
 
-      child_name:
-        description: "자녀 2명 이상인 경우 백업할 아이 이름 일부 입력"
-        required: false
-        default: ""
+      target_child:
+        description: "백업 대상 선택"
+        required: true
+        default: "ALL"
+        type: choice
+        options:
+          - "ALL (태민 + 태강 둘 다)"
+          - "태민 (5305112)"
+          - "태강 (5305117)"
 
   schedule:
-    # 매주 일요일 오전 3시 15분, 한국시간
-    - cron: "15 3 * * 0"
-      timezone: "Asia/Seoul"
+    # 매주 일요일 오전 3시 15분 (한국 시간 기준) -> UTC 토요일 18:15
+    - cron: "15 18 * * 6"
 
 permissions:
   contents: read
@@ -57,31 +60,31 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
 
       - name: Set up Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@v4
         with:
-          node-version: "24"
+          node-version: "20"
 
       - name: Install dependencies
         run: |
           set -euo pipefail
-
           python -m pip install --upgrade pip
-          pip install -r tools/kidsnote_fetch/requirements.txt
+          if [ -f tools/kidsnote_fetch/requirements.txt ]; then
+            pip install -r tools/kidsnote_fetch/requirements.txt
+          fi
           pip install pillow piexif playwright
 
       - name: Install Playwright Chromium
         run: |
           set -euo pipefail
-
           python -m playwright install --with-deps chromium
 
       - name: Verify required secrets
@@ -90,17 +93,12 @@ jobs:
           KIDSNOTE_PASSWORD: ${{ secrets.KIDSNOTE_PASSWORD }}
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+          NOTION_DATABASE_ID_2: ${{ secrets.NOTION_DATABASE_ID_2 }}
         run: |
           set -euo pipefail
-
           MISSING_SECRET=false
 
-          for secret_name in \
-            KIDSNOTE_ID \
-            KIDSNOTE_PASSWORD \
-            NOTION_TOKEN \
-            NOTION_DATABASE_ID
-          do
+          for secret_name in KIDSNOTE_ID KIDSNOTE_PASSWORD NOTION_TOKEN NOTION_DATABASE_ID NOTION_DATABASE_ID_2; do
             if [ -z "${!secret_name:-}" ]; then
               echo "::error::Repository secret '${secret_name}' is empty or unset"
               MISSING_SECRET=true
@@ -117,41 +115,22 @@ jobs:
           KIDSNOTE_PASSWORD: ${{ secrets.KIDSNOTE_PASSWORD }}
         run: |
           set -euo pipefail
-
           python tools/kidsnote_fetch/login_playwright.py
 
       - name: Mirror Kidsnote → Notion
         env:
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
-          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
-
+          NOTION_DATABASE_ID_TAEMIN: ${{ secrets.NOTION_DATABASE_ID }}
+          NOTION_DATABASE_ID_TAEGANG: ${{ secrets.NOTION_DATABASE_ID_2 }}
           PYTHONUNBUFFERED: "1"
 
-          # 수동 실행에서만 입력값 적용
-          KIDSNOTE_CHILD_NAME: >-
-            ${{ github.event_name == 'workflow_dispatch'
-                && inputs.child_name
-                || '' }}
+          # 수동 실행 옵션
+          TARGET_CHILD: ${{ github.event_name == 'workflow_dispatch' && inputs.target_child || 'ALL (태민 + 태강 둘 다)' }}
+          RUN_LIMIT: ${{ github.event_name == 'workflow_dispatch' && inputs.limit || '' }}
+          MONTHLY_SAMPLE: ${{ github.event_name == 'workflow_dispatch' && inputs.monthly_sample == 'true' && 'true' || 'false' }}
 
-          RUN_LIMIT: >-
-            ${{ github.event_name == 'workflow_dispatch'
-                && inputs.limit
-                || '' }}
-
-          MONTHLY_SAMPLE: >-
-            ${{ github.event_name == 'workflow_dispatch'
-                && inputs.monthly_sample == 'true'
-                && 'true'
-                || 'false' }}
-
-          # ─────────────────────────────────────
           # AI 기능 전체 강제 비활성화
-          # ─────────────────────────────────────
-
-          # 알림장 내부 AI 요약·자녀 일기·부모 편지 비활성화
           DISABLE_ALL_LLM: "true"
-
-          # AI 별도 페이지 비활성화
           DISABLE_GROWTH_STORY: "true"
           DISABLE_MILESTONES: "true"
           DISABLE_INTERESTS: "true"
@@ -160,38 +139,37 @@ jobs:
         run: |
           set -euo pipefail
 
-          ARGS=(
-            "--auth-mode"
-            "session-cookie-env"
+          COMMON_ARGS=(
+            "--auth-mode" "session-cookie-env"
             "--publish-to-notion"
             "--no-local-save"
-            "--child-id"
-            "5305112"
           )
 
           if [ -n "${RUN_LIMIT}" ]; then
-            ARGS+=(
-              "--limit"
-              "${RUN_LIMIT}"
-            )
+            COMMON_ARGS+=("--limit" "${RUN_LIMIT}")
           fi
 
           if [ "${MONTHLY_SAMPLE}" = "true" ]; then
-            ARGS+=(
-              "--monthly-sample"
-            )
+            COMMON_ARGS+=("--monthly-sample")
           fi
 
-          echo "============================================"
-          echo "Kidsnote → Notion backup"
-          echo "AI functions: disabled"
-          echo "Growth story: disabled"
-          echo "Milestones: disabled"
-          echo "Interests: disabled"
-          echo "Teacher thanks: disabled"
-          echo "============================================"
+          # 1. 태민 백업 (ID: 5305112)
+          if [[ "${TARGET_CHILD}" == *"ALL"* || "${TARGET_CHILD}" == *"태민"* ]]; then
+            echo "============================================"
+            echo "Kidsnote → Notion 백업 시작: 태민 (ID: 5305112)"
+            echo "============================================"
+            export NOTION_DATABASE_ID="${NOTION_DATABASE_ID_TAEMIN}"
+            python tools/kidsnote_fetch/fetch.py "${COMMON_ARGS[@]}" --child-id "5305112"
+          fi
 
-          python tools/kidsnote_fetch/fetch.py "${ARGS[@]}"
+          # 2. 태강 백업 (ID: 5305117)
+          if [[ "${TARGET_CHILD}" == *"ALL"* || "${TARGET_CHILD}" == *"태강"* ]]; then
+            echo "============================================"
+            echo "Kidsnote → Notion 백업 시작: 태강 (ID: 5305117)"
+            echo "============================================"
+            export NOTION_DATABASE_ID="${NOTION_DATABASE_ID_TAEGANG}"
+            python tools/kidsnote_fetch/fetch.py "${COMMON_ARGS[@]}" --child-id "5305117"
+          fi
 
       - name: Upload diagnostic logs on failure
         if: failure()
